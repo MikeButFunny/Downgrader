@@ -1,0 +1,161 @@
+$errorActionPreference = "Stop"
+$PSDefaultParameterValues['*:Encoding'] = 'utf8'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+try {
+    # === AGGRESSIVE CLEANUP ===
+    Write-Host "[*] Killing all Roblox processes..." -ForegroundColor Yellow
+    Get-Process | Where-Object { $_.ProcessName -like "*roblox*" -or $_.ProcessName -like "*Roblox*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+    taskkill /F /IM "RobloxPlayerBeta.exe" /IM "RobloxCrashHandler.exe" /IM "RobloxStudioBeta.exe" 2>$null
+    Start-Sleep -Seconds 3
+
+    $domains = @("weao.xyz", "whatexpsare.online", "weao.gg")
+    $version = $null
+    foreach ($domain in $domains) {
+        try {
+            $voltdata = (Invoke-WebRequest -Uri "https://$domain/api/status/exploits/Volt" -Headers @{ "User-Agent" = "WEAO-3PService" } -UseBasicParsing).Content | ConvertFrom-Json
+            if ($voltdata.rbxversion) {
+                $version = $voltdata.rbxversion
+                break
+            }
+        } catch {
+            continue
+        }
+    }
+
+    if (-not $version) {
+        Write-Host "ERR: could not retrieve Volt data from any WEAO domain.. try using a vpn." -ForegroundColor Red
+        Read-Host "press enter to close"
+        exit 1
+    }
+
+    $mainpath = "C:\ProgramData\"
+    $installpath = [System.IO.Path]::Combine($mainpath, "roblox", $version)
+    $downloadspath = [System.IO.Path]::Combine($mainpath, "roblox", "downloads", $version)
+    $downloadurl = "https://setup-aws.rbxcdn.com/$version-"
+
+    # === BETTER DELETE WITH RETRY ===
+    if (Test-Path -LiteralPath $installpath) {
+        Write-Host "[*] Removing old installation (retrying if locked)..." -ForegroundColor Yellow
+        for ($i = 1; $i -le 6; $i++) {
+            try {
+                [System.IO.Directory]::Delete($installpath, $true)
+                Write-Host "[+] Old folder deleted successfully." -ForegroundColor Green
+                break
+            } catch {
+                if ($i -eq 6) { throw }
+                Write-Host "[!] Delete attempt $i failed, retrying..." -ForegroundColor Yellow
+                Start-Sleep -Seconds 2
+                # Extra kill just in case
+                Get-Process | Where-Object { $_.ProcessName -like "*roblox*" } | Stop-Process -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    foreach ($p in @($installpath, $downloadspath)) {
+        if (-not (Test-Path -LiteralPath $p)) {
+            [System.IO.Directory]::CreateDirectory($p) | Out-Null
+        }
+    }
+
+    Get-Process -Name "RobloxPlayerBeta","RobloxCrashHandler" -ErrorAction SilentlyContinue | Stop-Process -Force
+
+    Write-Host "setting up.. DO NOT CLOSE THIS WINDOW!!!!!!!!" -ForegroundColor Red
+
+    Write-Host "[*] fetching rbxPkgManifest for $version..."
+    $manifestdata = (Invoke-WebRequest -Uri "${downloadurl}rbxPkgManifest.txt" -Headers @{ "User-Agent" = "RobloxPlayer/1.0 (Windows)" } -UseBasicParsing).Content -split "\r?\n|\r" | Where-Object { $_.Trim() -ne "" }
+
+    $pkgs = $manifestdata | Where-Object { $_.Trim().EndsWith(".zip") }
+    Write-Host "[+] found $($pkgs.Count) packages to download." -ForegroundColor Green
+
+    [System.IO.File]::WriteAllText(
+        [System.IO.Path]::Combine($installpath, "AppSettings.xml"), "
+<Settings>
+	<ContentFolder>content</ContentFolder>
+	<BaseUrl>http://www.roblox.com</BaseUrl>
+</Settings>
+", [System.Text.Encoding]::UTF8
+    )
+
+    # downloading
+    foreach ($pkg in $pkgs) {
+        $pkgpath = [System.IO.Path]::Combine($downloadspath, $pkg)
+        Write-Host "[+] downloading $pkg..." -ForegroundColor Green
+        if (-not (Test-Path -LiteralPath $pkgpath)) {
+            Invoke-WebRequest -Uri "${downloadurl}${pkg}" -Headers @{ "User-Agent" = "RobloxPlayer/1.0 (Windows)" } -OutFile $pkgpath -UseBasicParsing
+        }
+    }
+
+    # extraction (rest of original logic)
+    $pkgsmap = @{
+        "RobloxApp.zip"                      = ""
+        "redist.zip"                         = ""
+        "shaders.zip"                        = "shaders/"
+        "ssl.zip"                            = "ssl/"
+        "WebView2.zip"                       = ""
+        "WebView2RuntimeInstaller.zip"       = "WebView2RuntimeInstaller/"
+        "content-avatar.zip"                 = "content/avatar/"
+        "content-configs.zip"                = "content/configs/"
+        "content-fonts.zip"                  = "content/fonts/"
+        "content-sky.zip"                    = "content/sky/"
+        "content-sounds.zip"                 = "content/sounds/"
+        "content-textures2.zip"              = "content/textures/"
+        "content-models.zip"                 = "content/models/"
+        "content-platform-fonts.zip"         = "PlatformContent/pc/fonts/"
+        "content-platform-dictionaries.zip"  = "PlatformContent/pc/shared_compression_dictionaries/"
+        "content-terrain.zip"                = "PlatformContent/pc/terrain/"
+        "content-textures3.zip"              = "PlatformContent/pc/textures/"
+        "extracontent-luapackages.zip"       = "ExtraContent/LuaPackages/"
+        "extracontent-translations.zip"      = "ExtraContent/translations/"
+        "extracontent-models.zip"            = "ExtraContent/models/"
+        "extracontent-textures.zip"          = "ExtraContent/textures/"
+        "extracontent-places.zip"            = "ExtraContent/places/"
+    }
+
+    Write-Host "[+] extracting $($pkgs.Count) packages..." -ForegroundColor Green
+    foreach ($pkg in $pkgs) {
+        $pkgpath = [System.IO.Path]::Combine($downloadspath, $pkg)
+
+        $valid = $false
+        try { $z = [System.IO.Compression.ZipFile]::OpenRead($pkgpath); $z.Dispose(); $valid = $true } catch {}
+        if (-not $valid) {
+            Write-Host "[!] $pkg appears corrupt, re-downloading..." -ForegroundColor Red
+            Invoke-WebRequest -Uri "${downloadurl}${pkg}" -Headers @{ "User-Agent" = "RobloxPlayer/1.0 (Windows)" } -OutFile $pkgpath -UseBasicParsing
+        }
+
+        $relpath = if ($pkgsmap.ContainsKey($pkg)) { $pkgsmap[$pkg] } else { "" }
+        $dstpath = if ($relpath) { [System.IO.Path]::Combine($installpath, $relpath) } else { $installpath }
+        if (-not (Test-Path -LiteralPath $dstpath)) { [System.IO.Directory]::CreateDirectory($dstpath) | Out-Null }
+
+        Expand-Archive -LiteralPath $pkgpath -DestinationPath $dstpath -Force
+    }
+
+    $exepath = [System.IO.Path]::Combine($installpath, "RobloxPlayerBeta.exe")
+    if (-not (Test-Path -LiteralPath $exepath)) {
+        Write-Host "ERR: RobloxPlayerBeta.exe not found" -ForegroundColor Red
+        Read-Host "press enter to close"
+        exit 1
+    }
+
+    # register URI
+    $regvalue = "`"$exepath`" `"%1`""
+    $regpath = "HKCU:\Software\Classes\roblox-player\shell\open\command"
+    New-Item -Path $regpath -Force | Out-Null
+    Set-ItemProperty -Path $regpath -Name "(Default)" -Value $regvalue
+
+    Write-Host "`n[+] Setup completed successfully. Restart Volt and inject." -ForegroundColor Green
+    Read-Host "Press Enter to close"
+
+} catch {
+    $err = $_
+    Write-Host "`nplease show this message to tainted (@zlsb) on discord" -ForegroundColor Red
+    Write-Host "ERROR: $($err.Exception.Message)" -ForegroundColor Red
+    if ($err.InvocationInfo) {
+        Write-Host "errored at line number: $($err.InvocationInfo.ScriptLineNumber)" -ForegroundColor Yellow
+        Write-Host "errored line of code:" -ForegroundColor Yellow
+        Write-Host "$($err.InvocationInfo.Line.Trim())" -ForegroundColor Red
+    }
+    Read-Host "`npress enter to close"
+    exit 1
+}
