@@ -7,7 +7,12 @@ try {
     # === AGGRESSIVE CLEANUP ===
     Write-Host "[*] Killing all Roblox processes..." -ForegroundColor Yellow
     Get-Process | Where-Object { $_.ProcessName -like "*roblox*" -or $_.ProcessName -like "*Roblox*" } | Stop-Process -Force -ErrorAction SilentlyContinue
-    taskkill /F /IM "RobloxPlayerBeta.exe" /IM "RobloxCrashHandler.exe" /IM "RobloxStudioBeta.exe" 2>$null
+    
+    # Fixed taskkill (non-fatal)
+    try { 
+        taskkill /F /IM "RobloxPlayerBeta.exe" /IM "RobloxCrashHandler.exe" /IM "RobloxStudioBeta.exe" 2>$null 
+    } catch { }
+    
     Start-Sleep -Seconds 3
 
     $domains = @("weao.xyz", "whatexpsare.online", "weao.gg")
@@ -47,7 +52,6 @@ try {
                 if ($i -eq 6) { throw }
                 Write-Host "[!] Delete attempt $i failed, retrying..." -ForegroundColor Yellow
                 Start-Sleep -Seconds 2
-                # Extra kill just in case
                 Get-Process | Where-Object { $_.ProcessName -like "*roblox*" } | Stop-Process -Force -ErrorAction SilentlyContinue
             }
         }
@@ -87,7 +91,7 @@ try {
         }
     }
 
-    # extraction (rest of original logic)
+    # extraction
     $pkgsmap = @{
         "RobloxApp.zip"                      = ""
         "redist.zip"                         = ""
